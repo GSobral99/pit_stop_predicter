@@ -50,7 +50,7 @@ import re
 
 
 def slugify_circuit(gp):
-    """'Belgian Grand Prix' -> 'belgian_grand_prix' - used to name the
+    """'Belgian Grand Prix' -> 'belgian_grand_prix' — used to name the
     per-circuit model file."""
     slug = gp.strip().lower()
     slug = re.sub(r'[^a-z0-9]+', '_', slug)
@@ -58,6 +58,18 @@ def slugify_circuit(gp):
 
 
 def train_degradation_model(races, test_size=0.2, save_path='models/tyre_degradation.joblib'):
+    """races: list of (year, gp, session_type).
+    Trains a model that predicts LapTime_s from tyre, fuel, and track
+    condition features.
+
+    IMPORTANT: the train/test split is done by RACE (GroupShuffleSplit),
+    not by individual lap. A random per-lap split leaves laps from the
+    same race in both train and test, causing data leakage: features such
+    as FuelLoad_kg (deterministic from LapNumber and total lap count,
+    which varies by circuit) and TrackTemp (nearly constant within the
+    same race) let the model "identify" the race instead of learning
+    tyre degradation in a generic way — inflating R² artificially.
+    """
     df = build_dataset(races)
     if df.empty:
         raise ValueError('No data was loaded for training.')
@@ -80,7 +92,7 @@ def train_degradation_model(races, test_size=0.2, save_path='models/tyre_degrada
     if n_groups < 2:
         # Not enough races to split by group; fall back to a random
         # split, but warn that the metrics will be optimistic.
-        print('Warning: only 1 race available - falling back to a random '
+        print('Warning: only 1 race available — falling back to a random '
               'per-lap split (metrics are likely optimistic). Add more '
               'races for a trustworthy evaluation.')
         X_train, X_test, y_train, y_test = train_test_split(
@@ -113,6 +125,24 @@ def train_degradation_model(races, test_size=0.2, save_path='models/tyre_degrada
     joblib.dump(pipeline, save_path)
 
     return pipeline, metrics
+
+
+def estimate_tyre_advantage_s_per_lap(curve):
+    """Estimates the average per-lap pace advantage of a fresh tyre over
+    an aging one, from a predicted degradation curve (as returned by
+    predict_degradation_curve or found under result['curve']).
+
+    This is exactly the quantity simulate_pit_stop_risk needs for
+    `tyre_advantage_s_per_lap`: how many seconds per lap you gain while
+    your tyres are fresher than a rival's — but instead of a fixed guess,
+    it comes straight from the trained model's own prediction for this
+    circuit and compound.
+    """
+    if len(curve) < 2:
+        return 0.0
+    total_laps = len(curve)
+    total_degradation = curve['PredictedLapTime_s'].iloc[-1] - curve['PredictedLapTime_s'].iloc[0]
+    return max(0.0, total_degradation / (total_laps - 1))
 
 
 def predict_degradation_curve(pipeline, compound, track_temp, fuel_start_kg,
@@ -164,6 +194,14 @@ def _stint_predictions(pipeline, compound, track_temp, fuel_start_kg, total_laps
 def suggest_pit_window(pipeline, compound, track_temp, fuel_start_kg, total_laps,
                         pit_loss_s=22.0, second_compound=None, min_stint_laps=5,
                         air_temp=25.0, humidity=50.0):
+    """Suggests the ideal pit stop lap (one-stop strategy): tests each
+    candidate lap as a stop point, adds up the predicted 1st-stint time +
+    pit_loss_s + predicted 2nd-stint time (fresh tyre), and picks the lap
+    that minimizes total race time.
+
+    This replaces an arbitrary "accumulated loss" threshold with a direct
+    strategy comparison — more realistic, and it always returns an answer
+    (it can never come back empty)."""
     second_compound = second_compound or compound
     min_stint_laps = max(1, min_stint_laps)
 

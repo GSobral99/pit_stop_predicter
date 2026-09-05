@@ -1,7 +1,34 @@
+"""
+Full pipeline for the Predictive Pit Stop Strategy & Tyre Degradation Simulator.
+
+Connects the four modules:
+    data_loader.py -> features.py -> model.py -> simulation.py
+
+Per-circuit model (recommended): train with several seasons of the SAME
+GP, so the model learns that circuit's degradation well instead of trying
+(and failing) to generalize across different circuits — see the README /
+the discussion about negative R2 when mixing circuits.
+
+Usage:
+    python main.py
+    python main.py --gp Monza --years 2021 2022 2023
+    python main.py --gp "Belgian Grand Prix" --years 2022 2023 \
+                    --compound MEDIUM --track-temp 35 --total-laps 44 \
+                    --pit-loss 22 --sc-probability 0.3
+
+If no races are given, a sample set is used (Monza, 2021-2023). Training
+requires access to the FastF1 API (not available in every environment) —
+if it fails, the script explains the error and exits cleanly.
+"""
 import argparse
 import sys
 
-from src.model import slugify_circuit, suggest_pit_window, train_degradation_model
+from src.model import (
+    estimate_tyre_advantage_s_per_lap,
+    slugify_circuit,
+    suggest_pit_window,
+    train_degradation_model,
+)
 from src.simulation import compare_scenarios
 
 
@@ -62,7 +89,7 @@ def run_pipeline(args):
     else:
         print(f"\nWarning: training with {len(args.gp)} different circuits "
               f"({args.gp}). This is not the recommended 'per-circuit' flow "
-              f"- expect weak generalization metrics (see the negative R2 "
+              f"— expect weak generalization metrics (see the negative R2 "
               f"discussion).")
 
     print(f'\n[1/3] Training the degradation model with: {races}')
@@ -91,21 +118,35 @@ def run_pipeline(args):
     )
     print(f"Suggested optimal pit stop lap: {result['optimal_pit_lap']}")
 
-    print(f'\n[3/3] Running the Monte Carlo pit stop risk simulation '
+    # Tie the Monte Carlo risk analysis to THIS specific pit stop: use the
+    # degradation model's own predicted curve to estimate how much pace a
+    # fresh tyre is worth per lap for this circuit/compound, instead of a
+    # generic guessed constant.
+    tyre_advantage = estimate_tyre_advantage_s_per_lap(result['curve'])
+    print(f"Estimated fresh-tyre pace advantage for {args.compound} at this "
+          f"circuit: {tyre_advantage:.3f} s/lap (from the trained degradation model)")
+
+    print(f"\n[3/3] Running the Monte Carlo pit stop risk simulation for "
+          f"pitting on lap {result['optimal_pit_lap']} "
           f'({args.n_simulations} simulations per scenario, mean pit loss={args.pit_loss}s, '
           f'SC probability={args.sc_probability})...')
     comparison = compare_scenarios(
         n_simulations=args.n_simulations,
         pit_loss_mean_s=args.pit_loss,
         safety_car_probability_with_sc=args.sc_probability,
+        tyre_advantage_s_per_lap=tyre_advantage,
     )
     print(comparison.to_string())
+    print(f"\n(Read as: risk of gaining/losing a track position IF you pit on "
+          f"lap {result['optimal_pit_lap']}, using this circuit's own fresh-tyre "
+          f"pace advantage of {tyre_advantage:.3f} s/lap — not a generic guess.)")
 
     return {
         'metrics': metrics,
         'model_path': model_path,
         'optimal_pit_lap': result['optimal_pit_lap'],
         'degradation_curve': result['curve'],
+        'tyre_advantage_s_per_lap': tyre_advantage,
         'simulation_comparison': comparison,
     }
 

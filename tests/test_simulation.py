@@ -45,6 +45,8 @@ class TestSimulatePitStopRisk:
         assert summary_sc['mean_pit_loss_s'] < summary_no_sc['mean_pit_loss_s']
 
     def test_close_battle_has_more_position_changes_than_clear_air(self):
+        # Em ar livre os gaps são maiores -> muito mais difícil o pit
+        # stop mudar a ordem, nos dois sentidos.
         close, _ = simulate_pit_stop_risk(n_simulations=20_000, scenario='close_battle', rng_seed=3)
         clear, _ = simulate_pit_stop_risk(n_simulations=20_000, scenario='clear_air', rng_seed=3)
         assert close['p_gain_position_on_car_ahead'] > clear['p_gain_position_on_car_ahead']
@@ -57,6 +59,8 @@ class TestSimulatePitStopRisk:
     def test_zero_simulations_returns_empty_dataframe(self):
         summary, df = simulate_pit_stop_risk(n_simulations=0)
         assert len(df) == 0
+        # mean() de uma série vazia é NaN — o resumo não deve rebentar,
+        # mas o valor não é interpretável; documentamos o caso limite.
         assert summary['n_simulations'] == 0
 
 
